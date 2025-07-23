@@ -25,6 +25,7 @@
     <Reference Include="System.Configuration.Install" />
     <Reference Include="System.Core" />
     <Reference Include="System.Xml" />
+    <Reference Include="System.Management" />
   </ItemGroup>
 
   <ItemGroup>

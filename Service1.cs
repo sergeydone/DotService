@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Xml;
+using System.Management;
 
 namespace PingService
 {
@@ -32,17 +33,43 @@ namespace PingService
         public bool IsActive { get; set; }
     }
 
+    public class DiskTarget
+    {
+        public string DriveLetter { get; set; }
+        public int DiskTimerSec { get; set; }
+        public bool IsActive { get; set; }
+    }
+
+    public class CpuTarget
+    {
+        public int CpuTimerSec { get; set; }
+        public bool IsActive { get; set; }
+    }
+
+    public class RamTarget
+    {
+        public int RamTimerSec { get; set; }
+        public bool IsActive { get; set; }
+    }
+
     public class ServiceConfig
     {
         public List<PingTarget> PingTargets { get; set; }
         public List<TcpTarget> TcpTargets { get; set; }
         public List<AliveTarget> AliveTargets { get; set; }
+        public List<DiskTarget> DiskTargets { get; set; }
+        public List<CpuTarget> CpuTargets { get; set; }
+        public List<RamTarget> RamTargets { get; set; }
+
 
         public ServiceConfig()
         {
             PingTargets = new List<PingTarget>();
             TcpTargets = new List<TcpTarget>();
             AliveTargets = new List<AliveTarget>();
+            DiskTargets = new List<DiskTarget>();
+            CpuTargets = new List<CpuTarget>();
+            RamTargets = new List<RamTarget>();
         }
 
         public static ServiceConfig Load(string path)
@@ -217,6 +244,98 @@ namespace PingService
                         config.AliveTargets.Add(target);
                     }
                 }
+
+
+                ///
+                /// 
+                // Load Disk targets
+                var diskNodes = doc.SelectNodes("//Config/Disk/Target");
+                if (diskNodes != null)
+                {
+                    foreach (XmlNode node in diskNodes)
+                    {
+                        var target = new DiskTarget();
+
+                        var driveNode = node.SelectSingleNode("DriveLetter");
+                        if (driveNode != null && !string.IsNullOrEmpty(driveNode.InnerText.Trim()))
+                            target.DriveLetter = driveNode.InnerText.Trim();
+                        
+                        int interval;
+                        var timerNode = node.SelectSingleNode("DiskTimerSec");
+                        if (int.TryParse(timerNode.InnerText, out interval))
+                            target.DiskTimerSec = interval;
+                        else
+                            target.DiskTimerSec = 60;
+
+                        bool active;
+                        var activeNode = node.SelectSingleNode("IsActive");
+                        if (activeNode != null && bool.TryParse(activeNode.InnerText, out active))
+                            target.IsActive = active;
+                        else
+                            target.IsActive = true;
+
+                        if (!string.IsNullOrEmpty(target.DriveLetter))
+                            config.DiskTargets.Add(target);
+                    }
+                }
+
+                ///
+                /// 
+                // Load CPU targets
+                var cpuNodes = doc.SelectNodes("//Config/CPU/Target");
+                if (cpuNodes != null)
+                {
+                    foreach (XmlNode node in cpuNodes)
+                    {
+                        var target = new CpuTarget();
+
+                        int interval;
+                        var timerNode = node.SelectSingleNode("CpuTimerSec");
+                        if (timerNode != null && int.TryParse(timerNode.InnerText, out interval))
+                            target.CpuTimerSec = interval;
+                        else
+                            target.CpuTimerSec = 60;
+
+                        bool active;
+                        var activeNode = node.SelectSingleNode("IsActive");
+                        if (activeNode != null && bool.TryParse(activeNode.InnerText, out active))
+                            target.IsActive = active;
+                        else
+                            target.IsActive = true;
+
+                        config.CpuTargets.Add(target);
+                    }
+                }
+                ///
+                /// 
+                // Load RAM targets
+                var ramNodes = doc.SelectNodes("//Config/RAM/Target");
+                if (ramNodes != null)
+                {
+                    foreach (XmlNode node in ramNodes)
+                    {
+                        var target = new RamTarget();
+
+                        int interval;
+                        var timerNode = node.SelectSingleNode("RamTimerSec");
+                        if (timerNode != null && int.TryParse(timerNode.InnerText, out interval))
+                            target.RamTimerSec = interval;
+                        else
+                            target.RamTimerSec = 60;
+
+                        bool active;
+                        var activeNode = node.SelectSingleNode("IsActive");
+                        if (activeNode != null && bool.TryParse(activeNode.InnerText, out active))
+                            target.IsActive = active;
+                        else
+                            target.IsActive = true;
+
+                        config.RamTargets.Add(target);
+                    }
+                }
+
+                /// 
+                /// 
             }
             catch (Exception ex)
             {
@@ -234,6 +353,9 @@ namespace PingService
         private List<System.Threading.Timer> pingTimers;
         private List<Thread> tcpThreads;
         private List<Thread> aliveThreads;
+        private List<Thread> diskThreads;
+        private List<Thread> cpuThreads;
+        private List<Thread> ramThreads;
         private bool stopRequested = false;
         private string logDirectory = @"C:\Logs";
 
@@ -243,6 +365,9 @@ namespace PingService
             pingTimers = new List<System.Threading.Timer>();
             tcpThreads = new List<Thread>();
             aliveThreads = new List<Thread>();
+            diskThreads = new List<Thread>();
+            cpuThreads = new List<Thread>();
+            ramThreads = new List<Thread>();
         }
 
         protected override void OnStart(string[] args)
@@ -294,6 +419,44 @@ namespace PingService
                     aliveThreads.Add(thread);
                 }
             }
+
+            // Start disk threads
+            foreach (var target in config.DiskTargets)
+            {
+                if (target.IsActive)
+                {
+                    var thread = new Thread(new ParameterizedThreadStart(LogDiskStatus));
+                    thread.IsBackground = true;
+                    thread.Start(target);
+                    diskThreads.Add(thread);
+                }
+            }
+
+            // Start CPU threads
+            foreach (var target in config.CpuTargets)
+            {
+                if (target.IsActive)
+                {
+                    var thread = new Thread(new ParameterizedThreadStart(LogCpuStatus));
+                    thread.IsBackground = true;
+                    thread.Start(target);
+                    cpuThreads.Add(thread);
+                }
+            }
+
+            // Start RAM threads
+            foreach (var target in config.RamTargets)
+            {
+                if (target.IsActive)
+                {
+                    var thread = new Thread(new ParameterizedThreadStart(LogRamStatus));
+                    thread.IsBackground = true;
+                    thread.Start(target);
+                    ramThreads.Add(thread);
+                }
+            }
+
+
         }
 
         protected override void OnStop()
@@ -333,6 +496,48 @@ namespace PingService
                 }
             }
             aliveThreads.Clear();
+
+            // Stop disk threads
+            foreach (var thread in diskThreads)
+            {
+                if (thread != null && thread.IsAlive)
+                {
+                    if (!thread.Join(5000))
+                    {
+                        thread.Abort(); // .NET 4.0
+                    }
+                }
+            }
+            diskThreads.Clear();
+
+            // Stop CPU treads
+            foreach (var thread in cpuThreads)
+            {
+                if (thread != null && thread.IsAlive)
+                {
+                    if (!thread.Join(5000))
+                    {
+                        thread.Abort(); // .NET 4.0
+                    }
+                }
+            }
+            cpuThreads.Clear();
+
+            // Stop RAM threads
+            foreach (var thread in ramThreads)
+            {
+                if (thread != null && thread.IsAlive)
+                {
+                    if (!thread.Join(5000))
+                    {
+                        thread.Abort(); // .NET 4.0
+                    }
+                }
+            }
+            ramThreads.Clear();
+
+
+
         }
 
         private void DoPing(object state)
@@ -418,6 +623,152 @@ namespace PingService
                 }
             }
         }
+
+
+        private void LogDiskStatus(object state)
+        {
+            var target = (DiskTarget)state;
+            while (!stopRequested)
+            {
+                try
+                {
+                    DriveInfo drive = new DriveInfo(target.DriveLetter);
+                    if (drive.IsReady)
+                    {
+                        long total = drive.TotalSize;
+                        long free = drive.AvailableFreeSpace;
+
+                        string result = string.Format("{0}: DISK {1} Total: {2} GB, Free: {3} GB",
+                            DateTime.Now,
+                            target.DriveLetter,
+                            (total / (1024 * 1024 * 1024)),
+                            (free / (1024 * 1024 * 1024)));
+
+                        Log(result);
+                    }
+                    else
+                    {
+                        //Log(string.Format("{0}: DISK {1} is not ready", DateTime.Now, target.DriveLetter));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    //Log(string.Format("{0}: Disk error for {1} - {2}", DateTime.Now, target.DriveLetter, ex.Message));
+                }
+
+                Thread.Sleep(target.DiskTimerSec * 1000);
+            }
+        }
+
+
+        private void LogCpuStatus(object state)
+        {
+            var target = (CpuTarget)state;
+            while (!stopRequested)
+            {
+                try
+                {
+                    int coreCount = Environment.ProcessorCount;
+
+                    var cpuLoad = GetCpuLoadPercent();
+                    var cpuIdle = 100 - cpuLoad;
+
+                    string result = string.Format("{0}: CPU Cores: {1}, Load: {2}%, Idle: {3}%",
+                        DateTime.Now, coreCount, cpuLoad, cpuIdle);
+
+                    Log(result);
+                }
+                catch (Exception ex)
+                {
+                    Log(string.Format("{0}: CPU error - {1}", DateTime.Now, ex.Message));
+                }
+
+                Thread.Sleep(target.CpuTimerSec * 1000);
+            }
+        }
+
+
+        private int GetCpuLoadPercent()
+        {
+            int load = 0;
+            try
+            {
+                var searcher = new System.Management.ManagementObjectSearcher("select LoadPercentage from Win32_Processor");
+                foreach (var obj in searcher.Get())
+                {
+                    var value = obj["LoadPercentage"];
+                    if (value != null)
+                        load = Convert.ToInt32(value);
+                }
+            }
+            catch (Exception) { }
+
+            return load;
+        }
+
+        private void LogRamStatus(object state)
+        {
+            var target = (RamTarget)state;
+            while (!stopRequested)
+            {
+                try
+                {
+                    var totalRam = GetTotalMemoryMb();
+                    var freeRam = GetFreeMemoryMb();
+                    var usedRam = totalRam - freeRam;
+                    var loadPercent = totalRam > 0 ? (usedRam * 100 / totalRam) : 0;
+                    var freePercent = 100 - loadPercent;
+
+                    string result = string.Format("{0}: RAM Total: {1} MB, Used: {2} MB, Free: {3} MB, Load: {4}%, Free %: {5}%",
+                        DateTime.Now, totalRam, usedRam, freeRam, loadPercent, freePercent);
+
+                    Log(result);
+                }
+                catch (Exception ex)
+                {
+                    Log(string.Format("{0}: RAM error - {1}", DateTime.Now, ex.Message));
+                }
+
+                Thread.Sleep(target.RamTimerSec * 1000);
+            }
+        }
+
+        private int GetTotalMemoryMb()
+        {
+            try
+            {
+                var searcher = new ManagementObjectSearcher("SELECT TotalVisibleMemorySize FROM Win32_OperatingSystem");
+                foreach (var obj in searcher.Get())
+                {
+                    var val = obj["TotalVisibleMemorySize"];
+                    if (val != null)
+                        return Convert.ToInt32(val) / 1024;
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        private int GetFreeMemoryMb()
+        {
+            try
+            {
+                var searcher = new ManagementObjectSearcher("SELECT FreePhysicalMemory FROM Win32_OperatingSystem");
+                foreach (var obj in searcher.Get())
+                {
+                    var val = obj["FreePhysicalMemory"];
+                    if (val != null)
+                        return Convert.ToInt32(val) / 1024;
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+
+
+
+
 
         private void Log(string message)
         {
