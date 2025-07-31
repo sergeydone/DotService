@@ -35,6 +35,12 @@
     <None Include="icon.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+  <Reference Include="System.Management.Automation">
+    <HintPath>\lib\System.Management.Automation.dll</HintPath>
+  </Reference>
+</ItemGroup>
+
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 
   

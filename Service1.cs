@@ -8,6 +8,13 @@ using System.Text;
 using System.Threading;
 using System.Xml;
 using System.Management;
+using System.IO.Compression;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Management.Automation;
+using System.Linq;
+
+
 
 namespace PingService
 {
@@ -52,6 +59,18 @@ namespace PingService
         public bool IsActive { get; set; }
     }
 
+    public class ArchiveTarget
+    {
+        public string SourcePath { get; set; }
+        public string DestinationPath { get; set; }
+        public TimeSpan StartTime { get; set; }
+        public int FilesAgeDaysBeforeArchive { get; set; }
+        public bool DeleteOldArchive { get; set; }
+        public int DeleteOldArchiveAgeDays { get; set; }
+        public bool IsActive { get; set; }
+        public DateTime LastExecuted { get; set; }
+    }
+
     public class ServiceConfig
     {
         public List<PingTarget> PingTargets { get; set; }
@@ -60,7 +79,7 @@ namespace PingService
         public List<DiskTarget> DiskTargets { get; set; }
         public List<CpuTarget> CpuTargets { get; set; }
         public List<RamTarget> RamTargets { get; set; }
-
+        public List<ArchiveTarget> ArchiveTargets { get; set; }
 
         public ServiceConfig()
         {
@@ -70,12 +89,12 @@ namespace PingService
             DiskTargets = new List<DiskTarget>();
             CpuTargets = new List<CpuTarget>();
             RamTargets = new List<RamTarget>();
+            ArchiveTargets = new List<ArchiveTarget>();
         }
 
         public static ServiceConfig Load(string path)
         {
             var config = new ServiceConfig();
-
             try
             {
                 if (!File.Exists(path))
@@ -116,7 +135,7 @@ namespace PingService
                     foreach (XmlNode node in pingNodes)
                     {
                         var target = new PingTarget();
-                        
+
                         var addressNode = node.SelectSingleNode("PingAddress");
                         if (addressNode != null && !string.IsNullOrEmpty(addressNode.InnerText.Trim()))
                             target.PingAddress = addressNode.InnerText;
@@ -210,7 +229,6 @@ namespace PingService
                     foreach (XmlNode node in aliveNodes)
                     {
                         var target = new AliveTarget();
-
                         var textNode = node.SelectSingleNode("AliveText");
                         if (textNode != null && !string.IsNullOrEmpty(textNode.InnerText.Trim()))
                             target.AliveText = textNode.InnerText;
@@ -245,9 +263,6 @@ namespace PingService
                     }
                 }
 
-
-                ///
-                /// 
                 // Load Disk targets
                 var diskNodes = doc.SelectNodes("//Config/Disk/Target");
                 if (diskNodes != null)
@@ -255,11 +270,10 @@ namespace PingService
                     foreach (XmlNode node in diskNodes)
                     {
                         var target = new DiskTarget();
-
                         var driveNode = node.SelectSingleNode("DriveLetter");
                         if (driveNode != null && !string.IsNullOrEmpty(driveNode.InnerText.Trim()))
                             target.DriveLetter = driveNode.InnerText.Trim();
-                        
+
                         int interval;
                         var timerNode = node.SelectSingleNode("DiskTimerSec");
                         if (int.TryParse(timerNode.InnerText, out interval))
@@ -278,9 +292,6 @@ namespace PingService
                             config.DiskTargets.Add(target);
                     }
                 }
-
-                ///
-                /// 
                 // Load CPU targets
                 var cpuNodes = doc.SelectNodes("//Config/CPU/Target");
                 if (cpuNodes != null)
@@ -306,8 +317,6 @@ namespace PingService
                         config.CpuTargets.Add(target);
                     }
                 }
-                ///
-                /// 
                 // Load RAM targets
                 var ramNodes = doc.SelectNodes("//Config/RAM/Target");
                 if (ramNodes != null)
@@ -315,7 +324,6 @@ namespace PingService
                     foreach (XmlNode node in ramNodes)
                     {
                         var target = new RamTarget();
-
                         int interval;
                         var timerNode = node.SelectSingleNode("RamTimerSec");
                         if (timerNode != null && int.TryParse(timerNode.InnerText, out interval))
@@ -334,15 +342,94 @@ namespace PingService
                     }
                 }
 
-                /// 
-                /// 
+                // Load Archive targets
+                var archiveNodes = doc.SelectNodes("//Config/Archive/Target");
+                if (archiveNodes != null)
+                {
+                    foreach (XmlNode node in archiveNodes)
+                    {
+                        var target = new ArchiveTarget();
+
+                        var sourceNode = node.SelectSingleNode("SourcePath");
+                        if (sourceNode != null && !string.IsNullOrEmpty(sourceNode.InnerText.Trim()))
+                            target.SourcePath = sourceNode.InnerText.Trim();
+
+                        var destNode = node.SelectSingleNode("DestinationPath");
+                        if (destNode != null && !string.IsNullOrEmpty(destNode.InnerText.Trim()))
+                            target.DestinationPath = destNode.InnerText.Trim();
+
+                        var startTimeNode = node.SelectSingleNode("StartTime");
+                        if (startTimeNode != null && !string.IsNullOrEmpty(startTimeNode.InnerText.Trim()))
+                        {
+                            TimeSpan startTime;
+                            if (TimeSpan.TryParse(startTimeNode.InnerText.Trim(), out startTime))
+                                target.StartTime = startTime;
+                            else
+                                target.StartTime = new TimeSpan(17, 0, 0); // default 17:00
+                        }
+                        else
+                            target.StartTime = new TimeSpan(17, 0, 0); // default 17:00
+
+                        var ageNode = node.SelectSingleNode("FilesAgeDaysBeforeArchive");
+                        if (ageNode != null)
+                        {
+                            int age;
+                            if (int.TryParse(ageNode.InnerText, out age))
+                                target.FilesAgeDaysBeforeArchive = age;
+                            else
+                                target.FilesAgeDaysBeforeArchive = 5; // default
+                        }
+                        else
+                            target.FilesAgeDaysBeforeArchive = 5; // default
+
+                        var deleteOldNode = node.SelectSingleNode("DeleteOldArchive");
+                        if (deleteOldNode != null)
+                        {
+                            bool deleteOld;
+                            if (bool.TryParse(deleteOldNode.InnerText, out deleteOld))
+                                target.DeleteOldArchive = deleteOld;
+                            else
+                                target.DeleteOldArchive = true; // default
+                        }
+                        else
+                            target.DeleteOldArchive = true; // default
+
+                        var deleteAgeNode = node.SelectSingleNode("DeleteOldArchiveAgeDays");
+                        if (deleteAgeNode != null)
+                        {
+                            int deleteAge;
+                            if (int.TryParse(deleteAgeNode.InnerText, out deleteAge))
+                                target.DeleteOldArchiveAgeDays = deleteAge;
+                            else
+                                target.DeleteOldArchiveAgeDays = 30; // default
+                        }
+                        else
+                            target.DeleteOldArchiveAgeDays = 30; // default
+
+                        var activeNode = node.SelectSingleNode("IsActive");
+                        if (activeNode != null)
+                        {
+                            bool active;
+                            if (bool.TryParse(activeNode.InnerText, out active))
+                                target.IsActive = active;
+                            else
+                                target.IsActive = true; // default
+                        }
+                        else
+                            target.IsActive = true; // default
+
+                        target.LastExecuted = DateTime.MinValue;
+
+                        if (!string.IsNullOrEmpty(target.SourcePath) && !string.IsNullOrEmpty(target.DestinationPath))
+                            config.ArchiveTargets.Add(target);
+                    }
+                }
+
             }
             catch (Exception ex)
             {
-                // Log error if needed
                 // File.AppendAllText(@"C:\Logs\ConfigError.txt", string.Format("{0}: {1}\r\n", DateTime.Now, ex.Message));
             }
-
             return config;
         }
     }
@@ -356,6 +443,7 @@ namespace PingService
         private List<Thread> diskThreads;
         private List<Thread> cpuThreads;
         private List<Thread> ramThreads;
+        private Thread archiveThread;
         private bool stopRequested = false;
         private string logDirectory = @"C:\Logs";
 
@@ -373,7 +461,6 @@ namespace PingService
         protected override void OnStart(string[] args)
         {
             stopRequested = false;
-
             string exePath = AppDomain.CurrentDomain.BaseDirectory;
             string configPath = Path.Combine(exePath, "PingService.config.xml");
             config = ServiceConfig.Load(configPath);
@@ -456,13 +543,20 @@ namespace PingService
                 }
             }
 
+            // Start Archive thread 
+
+            if (config.ArchiveTargets.Count > 0)
+            {
+                archiveThread = new Thread(new ThreadStart(ArchiveLoop));
+                archiveThread.IsBackground = true;
+                archiveThread.Start();
+            }
 
         }
 
         protected override void OnStop()
         {
             stopRequested = true;
-
             // Dispose ping timers
             foreach (var timer in pingTimers)
             {
@@ -470,7 +564,6 @@ namespace PingService
                     timer.Dispose();
             }
             pingTimers.Clear();
-
             // Stop TCP threads
             foreach (var thread in tcpThreads)
             {
@@ -483,7 +576,6 @@ namespace PingService
                 }
             }
             tcpThreads.Clear();
-
             // Stop Alive threads
             foreach (var thread in aliveThreads)
             {
@@ -496,7 +588,6 @@ namespace PingService
                 }
             }
             aliveThreads.Clear();
-
             // Stop disk threads
             foreach (var thread in diskThreads)
             {
@@ -509,7 +600,6 @@ namespace PingService
                 }
             }
             diskThreads.Clear();
-
             // Stop CPU treads
             foreach (var thread in cpuThreads)
             {
@@ -522,7 +612,6 @@ namespace PingService
                 }
             }
             cpuThreads.Clear();
-
             // Stop RAM threads
             foreach (var thread in ramThreads)
             {
@@ -536,8 +625,14 @@ namespace PingService
             }
             ramThreads.Clear();
 
-
-
+            // Stop archive thread
+            if (archiveThread != null && archiveThread.IsAlive)
+            {
+                if (!archiveThread.Join(5000))
+                {
+                    archiveThread.Abort();
+                }
+            }
         }
 
         private void DoPing(object state)
@@ -573,7 +668,6 @@ namespace PingService
                     {
                         var result = client.BeginConnect(target.TcpHost, target.TcpPort, null, null);
                         bool connected = false;
-
                         try
                         {
                             if (result.AsyncWaitHandle.WaitOne(1000, false))
@@ -624,7 +718,6 @@ namespace PingService
             }
         }
 
-
         private void LogDiskStatus(object state)
         {
             var target = (DiskTarget)state;
@@ -637,7 +730,6 @@ namespace PingService
                     {
                         long total = drive.TotalSize;
                         long free = drive.AvailableFreeSpace;
-
                         string result = string.Format("{0}: DISK {1} Total: {2} GB, Free: {3} GB",
                             DateTime.Now,
                             target.DriveLetter,
@@ -655,11 +747,9 @@ namespace PingService
                 {
                     //Log(string.Format("{0}: Disk error for {1} - {2}", DateTime.Now, target.DriveLetter, ex.Message));
                 }
-
                 Thread.Sleep(target.DiskTimerSec * 1000);
             }
         }
-
 
         private void LogCpuStatus(object state)
         {
@@ -669,10 +759,8 @@ namespace PingService
                 try
                 {
                     int coreCount = Environment.ProcessorCount;
-
                     var cpuLoad = GetCpuLoadPercent();
                     var cpuIdle = 100 - cpuLoad;
-
                     string result = string.Format("{0}: CPU Cores: {1}, Load: {2}%, Idle: {3}%",
                         DateTime.Now, coreCount, cpuLoad, cpuIdle);
 
@@ -682,11 +770,9 @@ namespace PingService
                 {
                     Log(string.Format("{0}: CPU error - {1}", DateTime.Now, ex.Message));
                 }
-
                 Thread.Sleep(target.CpuTimerSec * 1000);
             }
         }
-
 
         private int GetCpuLoadPercent()
         {
@@ -702,7 +788,6 @@ namespace PingService
                 }
             }
             catch (Exception) { }
-
             return load;
         }
 
@@ -718,7 +803,6 @@ namespace PingService
                     var usedRam = totalRam - freeRam;
                     var loadPercent = totalRam > 0 ? (usedRam * 100 / totalRam) : 0;
                     var freePercent = 100 - loadPercent;
-
                     string result = string.Format("{0}: RAM Total: {1} MB, Used: {2} MB, Free: {3} MB, Load: {4}%, Free %: {5}%",
                         DateTime.Now, totalRam, usedRam, freeRam, loadPercent, freePercent);
 
@@ -728,7 +812,6 @@ namespace PingService
                 {
                     Log(string.Format("{0}: RAM error - {1}", DateTime.Now, ex.Message));
                 }
-
                 Thread.Sleep(target.RamTimerSec * 1000);
             }
         }
@@ -765,11 +848,6 @@ namespace PingService
             return 0;
         }
 
-
-
-
-
-
         private void Log(string message)
         {
             try
@@ -778,15 +856,211 @@ namespace PingService
                     Environment.MachineName,
                     DateTime.Now.ToString("yyyyMMdd_HHmmss"),
                     Guid.NewGuid().ToString().Substring(0, 4));
-
                 string filePath = Path.Combine(logDirectory, fileName);
 
                 File.WriteAllText(filePath, message, Encoding.UTF8);
             }
             catch (Exception ex)
             {
-                // Optionally log to event log or another location
             }
         }
+
+        private void ArchiveLoop()
+        {
+            while (!stopRequested)
+            {
+                try
+                {
+                    DateTime now = DateTime.Now;
+
+                    foreach (var target in config.ArchiveTargets)
+                    {
+                        if (!target.IsActive)
+                            continue;
+
+                        // Check if it's time to run archive for this target
+                        DateTime todayScheduleTime = new DateTime(now.Year, now.Month, now.Day,
+                            target.StartTime.Hours, target.StartTime.Minutes, target.StartTime.Seconds);
+
+                        // Check if we should run today and haven't run yet today
+                        bool shouldRun = false;
+
+                        if (target.LastExecuted.Date < now.Date && now.TimeOfDay >= target.StartTime)
+                        {
+                            shouldRun = true;
+                        }
+
+                        if (shouldRun)
+                        {
+                            PerformArchive(target);
+                            target.LastExecuted = now;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log(string.Format("{0}: Archive loop error - {1}", DateTime.Now, ex.Message));
+                }
+
+                // Sleep for 1 minute before checking again
+                Thread.Sleep(60000);
+            }
+        }
+
+
+        private void PerformArchive(ArchiveTarget target)
+        {
+            try
+            {
+                // Log(string.Format("{0}: Starting archive task for {1}", DateTime.Now, target.SourcePath));
+
+                if (!Directory.Exists(target.SourcePath))
+                {
+                    Log(string.Format("{0}: Source path does not exist: {1}", DateTime.Now, target.SourcePath));
+                    return;
+                }
+
+                if (!Directory.Exists(target.DestinationPath))
+                {
+                    Directory.CreateDirectory(target.DestinationPath);
+                    Log(string.Format("{0}: Created destination directory: {1}", DateTime.Now, target.DestinationPath));
+                }
+
+                DateTime cutoffDate = DateTime.Now.AddDays(-target.FilesAgeDaysBeforeArchive);
+
+                CreateZipArchive(target.SourcePath, target.DestinationPath, cutoffDate);
+
+                // Clean old archives if enabled
+                if (target.DeleteOldArchive)
+                {
+                    CleanOldArchives(target.DestinationPath, target.DeleteOldArchiveAgeDays);
+                }
+
+                // Log(string.Format("{0}: Completed archive task for {1}", DateTime.Now, target.SourcePath));
+            }
+            catch (Exception ex)
+            {
+                // Log(string.Format("{0}: Archive error for {1} - {2}", DateTime.Now, target.SourcePath, ex.Message));
+            }
+        }
+
+
+        private void CreateZipArchive(string myFilesSourcePath, string myFilesDestinationPath, DateTime limit)
+        {
+
+            using (PowerShell ps = PowerShell.Create())
+            {
+                string script = @"
+                $myFilesSourcePath = $args[0]
+                $myFilesDestinationPath = $args[1]
+                $limit = $args[2]
+                $myMinFileSize = $args[3]
+
+                $myFilesSourcePath = $myFilesSourcePath + '\'
+                $myFilesDestinationPath = $myFilesDestinationPath + '\'
+            
+                $items = (Get-ChildItem -Path $myFilesSourcePath | Where-Object { $_.PSIsContainer  -and $_.CreationTime -lt $limit })
+
+                if ($items.length -gt 0) 
+                {
+                    foreach($item in $items)
+                    {
+                        $mySourceDirectoryName = $myFilesSourcePath + $item.name + '\'
+                        $myArchiveName = $myFilesDestinationPath + '\' + $item.name + '.zip'
+                        Compress-Archive -Path $mySourceDirectoryName -DestinationPath $myArchiveName -Force
+                    }
+
+                    $myArchiveContext = Get-ChildItem $myFilesDestinationPath | Where-Object { $_.Length -gt $myMinFileSize }
+
+                    if($myArchiveContext.length -gt 0)
+                    {
+                        $matches = Compare-Object $items $myArchiveContext -Property BaseName -IncludeEqual -ExcludeDifferent
+                    }
+
+                    if($matches.length -gt 0) 
+                    {
+                        foreach($item in $matches)
+                        {
+                            $removingItem = $myFilesSourcePath + $item.BaseName
+                            Remove-Item -Path $removingItem -Recurse -Force
+                        }
+                    }
+                }
+            ";
+
+                ps.AddScript(script)
+                  .AddArgument(myFilesSourcePath)
+                  .AddArgument(myFilesDestinationPath)
+                  .AddArgument(limit)
+                  .AddArgument(5);
+
+                var results = ps.Invoke();
+
+                if (ps.HadErrors)
+                {
+                    throw new Exception("Compression failed .");
+                }
+            }
+        }
+
+
+        private void CleanOldArchives(string archivePath, int maxAgeDays)
+        {
+            try
+            {
+                var cutoffDate = DateTime.Now.AddDays(-maxAgeDays);
+                var archiveFolders = Directory.GetDirectories(archivePath, "Archive_*");
+                var archiveFiles = Directory.GetFiles(archivePath, "Archive_*.zip");
+
+                int deletedCount = 0;
+
+                // Clean archive folders
+                foreach (var archiveFolder in archiveFolders)
+                {
+                    var dirInfo = new DirectoryInfo(archiveFolder);
+                    if (dirInfo.CreationTime <= cutoffDate)
+                    {
+                        try
+                        {
+                            Directory.Delete(archiveFolder, true);
+                            deletedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log(string.Format("{0}: Error deleting old archive folder {1} - {2}", DateTime.Now, archiveFolder, ex.Message));
+                        }
+                    }
+                }
+
+                // Clean archive files (for backward compatibility)
+                foreach (var archiveFile in archiveFiles)
+                {
+                    var fileInfo = new FileInfo(archiveFile);
+                    if (fileInfo.CreationTime <= cutoffDate)
+                    {
+                        try
+                        {
+                            File.Delete(archiveFile);
+                            deletedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            Log(string.Format("{0}: Error deleting old archive {1} - {2}", DateTime.Now, archiveFile, ex.Message));
+                        }
+                    }
+                }
+
+                if (deletedCount > 0)
+                {
+                    Log(string.Format("{0}: Deleted {1} old archive items", DateTime.Now, deletedCount));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(string.Format("{0}: Error cleaning old archives from {1} - {2}", DateTime.Now, archivePath, ex.Message));
+            }
+        }
+
+
     }
 }
